@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      # 将容器内的 workspace 映射到宿主机，数据不会因容器重启丢失
+      - ./workspace:/app/workspace
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped

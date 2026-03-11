@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>订单处理平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:        #0d0f14;
+            --surface:   #161920;
+            --surface2:  #1e2230;
+            --border:    #2a2f3d;
+            --accent:    #4fffb0;
+            --accent2:   #00c8ff;
+            --warn:      #ff6b6b;
+            --text:      #e8eaf0;
+            --muted:     #6b7280;
+            --radius:    10px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 32px 20px;
+            background-image:
+                radial-gradient(ellipse 60% 40% at 80% 10%, rgba(79,255,176,0.06) 0%, transparent 60%),
+                radial-gradient(ellipse 40% 30% at 10% 90%, rgba(0,200,255,0.05) 0%, transparent 60%);
+        }
+
+        /* ── Layout ── */
+        .wrap {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            margin-bottom: 40px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .logo-icon {
+            width: 44px; height: 44px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 22px;
+        }
+        .logo-text h1 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+        .logo-text p {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 2px;
+            font-family: 'Space Mono', monospace;
+        }
+        .badge {
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            color: var(--accent);
+            border: 1px solid rgba(79,255,176,0.3);
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: rgba(79,255,176,0.05);
+        }
+
+        /* ── Steps ── */
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .step-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: border-color .2s, transform .2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .step-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            opacity: 0;
+            transition: opacity .2s;
+        }
+        .step-card.has-files::before { opacity: 1; }
+        .step-card.has-files { border-color: rgba(79,255,176,0.25); }
+
+        .step-num {
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 12px;
+            letter-spacing: 0.1em;
+        }
+        .step-label {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 16px;
+        }
+        .step-tag {
+            font-size: 11px;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            font-weight: 300;
+        }
+
+        /* drop zone */
+        .dropzone {
+            border: 1.5px dashed var(--border);
+            border-radius: 8px;
+            padding: 18px 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .2s;
+            background: transparent;
+        }
+        .dropzone:hover, .dropzone.over {
+            border-color: var(--accent);
+            background: rgba(79,255,176,0.04);
+        }
+        .dropzone-icon { font-size: 24px; margin-bottom: 6px; }
+        .dropzone p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+        .dropzone p strong { color: var(--accent2); font-weight: 400; }
+        input[type=file] { display: none; }
+
+        /* file chips */
+        .file-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 12px;
+            min-height: 0;
+        }
+        .chip {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: rgba(79,255,176,0.08);
+            border: 1px solid rgba(79,255,176,0.2);
+            border-radius: 5px;
+            padding: 4px 8px;
+            font-size: 11px;
+            color: var(--accent);
+            animation: chipIn .15s ease;
+        }
+        @keyframes chipIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to   { opacity: 1; transform: scale(1); }
+        }
+        .chip-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+        /* ── Action area ── */
+        .action-area {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            margin-bottom: 16px;
+        }
+        .action-title {
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: .12em;
+            margin-bottom: 20px;
+        }
+
+        /* big run button */
+        .run-btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: #0d0f14;
+            font-family: 'Noto Sans SC', sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            transition: opacity .2s, transform .2s, box-shadow .2s;
+            position: relative;
+            overflow: hidden;
+        }
+        .run-btn::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: white;
+            opacity: 0;
+            transition: opacity .15s;
+        }
+        .run-btn:hover { box-shadow: 0 8px 32px rgba(79,255,176,0.3); transform: translateY(-1px); }
+        .run-btn:hover::after { opacity: 0.06; }
+        .run-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .run-btn.running {
+            background: var(--surface2);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+        }
+
+        /* progress */
+        .progress-wrap {
+            margin-top: 20px;
+            display: none;
+        }
+        .progress-wrap.show { display: block; }
+
+        .progress-track {
+            height: 4px;
+            background: var(--surface2);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            border-radius: 2px;
+            transition: width .4s cubic-bezier(.4,0,.2,1);
+        }
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .progress-msg {
+            font-size: 13px;
+            color: var(--muted);
+        }
+        .progress-pct {
+            font-family: 'Space Mono', monospace;
+            font-size: 12px;
+            color: var(--accent);
+        }
+
+        /* log lines */
+        .log-lines {
+            margin-top: 14px;
+            padding: 12px;
+            background: var(--surface2);
+            border-radius: 6px;
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            line-height: 1.8;
+            max-height: 120px;
+            overflow-y: auto;
+            color: var(--muted);
+        }
+        .log-line { animation: logIn .1s ease; }
+        .log-line.ok  { color: var(--accent); }
+        .log-line.err { color: var(--warn); }
+        @keyframes logIn { from { opacity:0; transform:translateX(-4px); } to { opacity:1; transform:none; } }
+
+        /* result / download */
+        .result-box {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            background: rgba(79,255,176,0.05);
+            border: 1px solid rgba(79,255,176,0.2);
+        }
+        .result-box.show { display: block; animation: fadeUp .3s ease; }
+        @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+
+        .result-box .rtitle {
+            font-size: 13px;
+            color: var(--accent);
+            font-weight: 500;
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .rtitle::before {
+            content: '✓';
+            width: 20px; height: 20px;
+            background: var(--accent);
+            color: #0d0f14;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .dl-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border-radius: 6px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            text-decoration: none;
+            font-size: 13px;
+            transition: border-color .2s, background .2s;
+            cursor: pointer;
+        }
+        .dl-btn:hover {
+            border-color: var(--accent2);
+            background: rgba(0,200,255,0.07);
+            color: var(--accent2);
+        }
+        .dl-btn svg { flex-shrink: 0; }
+
+        /* toast */
+        #toast {
+            position: fixed;
+            bottom: 28px; right: 28px;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            max-width: 320px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            opacity: 0;
+            transform: translateY(12px);
+            transition: opacity .25s, transform .25s;
+            pointer-events: none;
+            z-index: 999;
+        }
+        #toast.show { opacity: 1; transform: none; }
+        #toast.info    { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+        #toast.success { background: rgba(79,255,176,0.12); border: 1px solid rgba(79,255,176,0.35); color: var(--accent); }
+        #toast.error   { background: rgba(255,107,107,0.12); border: 1px solid rgba(255,107,107,0.35); color: var(--warn); }
+
+        /* footer */
+        footer {
+            text-align: center;
+            margin-top: 36px;
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: .06em;
+        }
+
+        /* mobile */
+        @media (max-width: 640px) {
+            .steps { grid-template-columns: 1fr; }
+            header { flex-direction: column; align-items: flex-start; gap: 12px; }
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+
+    <!-- Header -->
+    <header>
+        <div class="logo">
+            <div class="logo-icon">📊</div>
+            <div class="logo-text">
+                <h1>订单处理平台</h1>
+                <p>multi-channel order processor</p>
+            </div>
+        </div>
+        <span class="badge">v2.0</span>
+    </header>
+
+    <!-- Upload Steps -->
+    <div class="steps">
+
+        <div class="step-card" id="card-orders">
+            <div class="step-num">STEP 01</div>
+            <div class="step-label">后台订单原表 <span class="step-tag">CSV</span></div>
+            <div class="dropzone" id="zone-orders" onclick="document.getElementById('input-orders').click()">
+                <div class="dropzone-icon">📋</div>
+                <p>点击或拖拽文件<br><strong>支持 CSV / Excel</strong></p>
+            </div>
+            <div class="file-chips" id="chips-orders"></div>
+            <input type="file" id="input-orders" multiple accept=".csv,.xlsx,.xls">
+        </div>
+
+        <div class="step-card" id="card-shipments">
+            <div class="step-num">STEP 02</div>
+            <div class="step-label">后台货件表 <span class="step-tag">CSV</span></div>
+            <div class="dropzone" id="zone-shipments" onclick="document.getElementById('input-shipments').click()">
+                <div class="dropzone-icon">📦</div>
+                <p>点击或拖拽文件<br><strong>支持 CSV / Excel</strong></p>
+            </div>
+            <div class="file-chips" id="chips-shipments"></div>
+            <input type="file" id="input-shipments" multiple accept=".csv,.xlsx,.xls">
+        </div>
+
+        <div class="step-card" id="card-cost">
+            <div class="step-num">STEP 03 <span style="color:var(--muted);font-size:10px;margin-left:4px;">可选</span></div>
+            <div class="step-label">成本文件 <span class="step-tag">XLSX</span></div>
+            <div class="dropzone" id="zone-cost" onclick="document.getElementById('input-cost').click()">
+                <div class="dropzone-icon">💰</div>
+                <p>点击或拖拽文件<br><strong>支持 CSV / Excel</strong></p>
+            </div>
+            <div class="file-chips" id="chips-cost"></div>
+            <input type="file" id="input-cost" multiple accept=".csv,.xlsx,.xls">
+        </div>
+
+    </div>
+
+    <!-- Action -->
+    <div class="action-area">
+        <div class="action-title">STEP 04 — GENERATE</div>
+
+        <button class="run-btn" id="runBtn" onclick="startProcess()">
+            🚀 一键生成全部报表
+        </button>
+
+        <!-- Progress -->
+        <div class="progress-wrap" id="progressWrap">
+            <div class="progress-track">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-info">
+                <span class="progress-msg" id="progressMsg">准备中...</span>
+                <span class="progress-pct" id="progressPct">0%</span>
+            </div>
+            <div class="log-lines" id="logLines"></div>
+        </div>
+
+        <!-- Result -->
+        <div class="result-box" id="resultBox">
+            <div class="rtitle">全部报表生成完成，请下载</div>
+            <a class="dl-btn" id="dlBtn" href="#" onclick="doDownload(event)">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 12l-4-4h2.5V3h3v5H12L8 12z"/>
+                    <path d="M2 13h12v1.5H2z"/>
+                </svg>
+                下载全部结果（ZIP 压缩包）
+            </a>
+        </div>
+    </div>
+
+    <footer>订单处理平台 &nbsp;·&nbsp; 多渠道订单表 &amp; 费用表自动生成</footer>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────
+// State
+// ─────────────────────────────────────────
+const uploaded = { orders: [], shipments: [], cost: [] };
+let currentTaskId = null;
+let pollTimer     = null;
+
+// ─────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────
+function toast(msg, type = 'info', duration = 3000) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = `show ${type}`;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ─────────────────────────────────────────
+// Drag & drop + file input
+// ─────────────────────────────────────────
+['orders','shipments','cost'].forEach(type => {
+    const zone  = document.getElementById(`zone-${type}`);
+    const input = document.getElementById(`input-${type}`);
+
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+    zone.addEventListener('drop', e => {
+        e.preventDefault();
+        zone.classList.remove('over');
+        uploadFiles(type, e.dataTransfer.files);
+    });
+    input.addEventListener('change', e => {
+        uploadFiles(type, e.target.files);
+        input.value = '';   // 允许重复选同一文件
+    });
+});
+
+// ─────────────────────────────────────────
+// Upload
+// ─────────────────────────────────────────
+function uploadFiles(type, files) {
+    if (!files || files.length === 0) return;
+
+    const fd = new FormData();
+    fd.append('type', type);
+    // 如果已经有 task_id，带上去（让后端绑定到同一工作区）
+    if (currentTaskId) fd.append('task_id', currentTaskId);
+    for (const f of files) fd.append('files', f);
+
+    toast(`正在上传 ${files.length} 个文件...`, 'info');
+
+    fetch('/api/upload', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // 后端可能在此步骤创建了 task_id，保存下来
+                if (data.task_id && !currentTaskId) {
+                    currentTaskId = data.task_id;
+                }
+                uploaded[type] = data.files;
+                renderChips(type);
+                document.getElementById(`card-${type}`).classList.add('has-files');
+                toast(`✓ ${data.count} 个文件已上传`, 'success');
+            } else {
+                toast(`上传失败: ${data.error}`, 'error', 5000);
+            }
+        })
+        .catch(e => toast(`上传错误: ${e.message}`, 'error', 5000));
+}
+
+function renderChips(type) {
+    const wrap = document.getElementById(`chips-${type}`);
+    wrap.innerHTML = '';
+    uploaded[type].forEach(name => {
+        const d = document.createElement('div');
+        d.className = 'chip';
+        d.innerHTML = `<span class="chip-dot"></span>${name}`;
+        wrap.appendChild(d);
+    });
+}
+
+// ─────────────────────────────────────────
+// Process
+// ─────────────────────────────────────────
+function startProcess() {
+    if (uploaded.orders.length === 0) { toast('请先上传后台订单原表', 'error'); return; }
+    if (uploaded.shipments.length === 0) { toast('请先上传后台货件表', 'error'); return; }
+    if (uploaded.cost.length === 0) { toast('请先上传成本文件', 'error'); return; }
+
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.classList.add('running');
+    btn.textContent = '⏳ 处理中...';
+
+    document.getElementById('progressWrap').classList.add('show');
+    document.getElementById('resultBox').classList.remove('show');
+    document.getElementById('logLines').innerHTML = '';
+    setProgress(0, '正在提交任务...');
+
+    const body = currentTaskId ? { task_id: currentTaskId } : {};
+
+    fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            currentTaskId = data.task_id;
+            addLog('任务已提交，开始处理...');
+            pollTimer = setInterval(poll, 600);
+        } else {
+            resetBtn();
+            toast(`处理失败: ${data.error}`, 'error', 6000);
+        }
+    })
+    .catch(e => { resetBtn(); toast(`错误: ${e.message}`, 'error', 6000); });
+}
+
+function poll() {
+    if (!currentTaskId) return;
+    fetch(`/api/task/${currentTaskId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            const t = data.task;
+            setProgress(t.progress, t.message);
+
+            if (t.status === 'completed') {
+                clearInterval(pollTimer);
+                addLog(t.message, 'ok');
+                showResult();
+                resetBtn(true);
+            } else if (t.status === 'failed') {
+                clearInterval(pollTimer);
+                addLog(t.message, 'err');
+                resetBtn();
+                toast(t.message, 'error', 8000);
+            } else {
+                addLog(t.message);
+            }
+        });
+}
+
+// ─────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────
+let _lastMsg = '';
+function setProgress(pct, msg) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressPct').textContent  = pct + '%';
+    document.getElementById('progressMsg').textContent  = msg;
+}
+
+function addLog(msg, cls = '') {
+    if (msg === _lastMsg) return;
+    _lastMsg = msg;
+    const el = document.getElementById('logLines');
+    const line = document.createElement('div');
+    line.className = `log-line ${cls}`;
+    line.textContent = '› ' + msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+}
+
+function resetBtn(success = false) {
+    const btn = document.getElementById('runBtn');
+    btn.disabled = false;
+    btn.classList.remove('running');
+    btn.textContent = success ? '✓ 已完成 — 再次生成' : '🚀 一键生成全部报表';
+}
+
+function showResult() {
+    document.getElementById('resultBox').classList.add('show');
+}
+
+// ─────────────────────────────────────────
+// Download — 下载完成后重置整个页面状态
+// ─────────────────────────────────────────
+function doDownload(e) {
+    e.preventDefault();
+    if (!currentTaskId) { toast('没有可下载的任务', 'error'); return; }
+
+    const btn = document.getElementById('dlBtn');
+    btn.textContent = '⏳ 准备打包...';
+
+    // 用 <a> 触发下载（后端会流式返回 zip）
+    const link = document.createElement('a');
+    link.href = `/api/download/${currentTaskId}`;
+    link.download = '';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    toast('正在下载，下载完成后本次数据将自动清除', 'info', 5000);
+
+    // 等 3 秒后重置页面（给浏览器时间开始下载）
+    setTimeout(() => {
+        resetAll();
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 12l-4-4h2.5V3h3v5H12L8 12z"/>
+            <path d="M2 13h12v1.5H2z"/></svg>
+            下载全部结果（ZIP 压缩包）`;
+    }, 3000);
+}
+
+function resetAll() {
+    currentTaskId = null;
+    clearInterval(pollTimer);
+
+    // 清空上传状态
+    ['orders','shipments','cost'].forEach(type => {
+        uploaded[type] = [];
+        document.getElementById(`chips-${type}`).innerHTML = '';
+        document.getElementById(`card-${type}`).classList.remove('has-files');
+    });
+
+    document.getElementById('progressWrap').classList.remove('show');
+    document.getElementById('resultBox').classList.remove('show');
+    document.getElementById('logLines').innerHTML = '';
+    setProgress(0, '准备中...');
+    resetBtn();
+    _lastMsg = '';
+
+    toast('已重置，可开始新一次处理', 'success');
+}
+</script>
+</body>
+</html>

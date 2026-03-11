@@ -510,35 +510,49 @@ function toast(msg, type = 'info', duration = 3000) {
 
 // ─────────────────────────────────────────
 // Upload
+// 确保 task_id 在第一次上传时创建，后续复用
 // ─────────────────────────────────────────
-function uploadFiles(type, files) {
-    if (!files || files.length === 0) return;
 
-    const fd = new FormData();
-    fd.append('type', type);
-    // 如果已经有 task_id，带上去（让后端绑定到同一工作区）
-    if (currentTaskId) fd.append('task_id', currentTaskId);
-    for (const f of files) fd.append('files', f);
+// 先从后端获取或确认 task_id，再上传文件
+async function ensureTaskId() {
+    if (currentTaskId) return currentTaskId;
+    const res  = await fetch('/api/session', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+        currentTaskId = data.task_id;
+        return currentTaskId;
+    }
+    throw new Error('无法创建会话');
+}
+
+async function uploadFiles(type, files) {
+    if (!files || files.length === 0) return;
 
     toast(`正在上传 ${files.length} 个文件...`, 'info');
 
-    fetch('/api/upload', { method: 'POST', body: fd })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                // 后端可能在此步骤创建了 task_id，保存下来
-                if (data.task_id && !currentTaskId) {
-                    currentTaskId = data.task_id;
-                }
-                uploaded[type] = data.files;
-                renderChips(type);
-                document.getElementById(`card-${type}`).classList.add('has-files');
-                toast(`✓ ${data.count} 个文件已上传`, 'success');
-            } else {
-                toast(`上传失败: ${data.error}`, 'error', 5000);
-            }
-        })
-        .catch(e => toast(`上传错误: ${e.message}`, 'error', 5000));
+    try {
+        // 保证 task_id 存在且固定
+        const taskId = await ensureTaskId();
+
+        const fd = new FormData();
+        fd.append('type', type);
+        fd.append('task_id', taskId);   // 明确带上，不依赖 Cookie
+        for (const f of files) fd.append('files', f);
+
+        const res  = await fetch('/api/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+
+        if (data.success) {
+            uploaded[type] = data.files;
+            renderChips(type);
+            document.getElementById(`card-${type}`).classList.add('has-files');
+            toast(`✓ ${data.count} 个文件已上传`, 'success');
+        } else {
+            toast(`上传失败: ${data.error}`, 'error', 5000);
+        }
+    } catch(e) {
+        toast(`上传错误: ${e.message}`, 'error', 5000);
+    }
 }
 
 function renderChips(type) {
@@ -570,7 +584,7 @@ function startProcess() {
     document.getElementById('logLines').innerHTML = '';
     setProgress(0, '正在提交任务...');
 
-    const body = currentTaskId ? { task_id: currentTaskId } : {};
+    const body = { task_id: currentTaskId };
 
     fetch('/api/process', {
         method: 'POST',

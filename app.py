@@ -317,57 +317,56 @@ def _load_fba_files(cost_dir: Path) -> pd.DataFrame:
 
 def run_cost(task: dict, dirs: dict) -> Path:
     """执行 cost.py 逻辑"""
+    from openpyxl.cell.cell import MergedCell as _MergedCell
+
     _log(task, "📋 生成发货成本表...", 52)
     fee_path, month_list = _get_fee_path_and_months(dirs)
     product_cost_df = _load_product_cost(dirs['cost'])
     fba_df = _load_fba_files(dirs['cost'])
 
-    if fee_path.exists():
-        wb = load_workbook(str(fee_path))
-        if FEE_SHEET_NAME not in wb.sheetnames:
-            ws = wb.create_sheet(FEE_SHEET_NAME)
-        else:
-            ws = wb[FEE_SHEET_NAME]
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = FEE_SHEET_NAME
+    # 始终新建工作簿，避免旧合并区域残留导致 MergedCell 写入错误
+    wb = Workbook()
+    ws = wb.active
+    ws.title = FEE_SHEET_NAME
 
     current_row = 1
 
+    # 写表头
+    for ci, cn in enumerate(COST_HEADER, 1):
+        c = ws.cell(row=current_row, column=ci, value=cn)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        c.border = THIN_BORDER
+    ws.freeze_panes = ws['A2']
+    current_row += 1
+
     for month in month_list:
         month_df = fba_df[fba_df["月份"] == month].copy()
-        month_df.sort_values("创建时间", inplace=True)
+        month_df = month_df.sort_values("创建时间")
 
-        # 表头（只写一次）
-        if current_row == 1:
-            for ci, cn in enumerate(COST_HEADER, 1):
-                c = ws.cell(row=current_row, column=ci, value=cn)
-                c.font = Font(bold=True)
+        # 月份标题行：不合并单元格，只填第一列，其余列填充背景色
+        # 避免合并后产生 MergedCell 导致后续写入报错
+        for ci in range(1, len(COST_HEADER) + 1):
+            c = ws.cell(row=current_row, column=ci,
+                        value=f"{month}月" if ci == 1 else None)
+            c.fill = MONTH_FILL
+            c.border = THIN_BORDER
+            if ci == 1:
                 c.alignment = Alignment(horizontal='center', vertical='center')
-                c.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-                c.border = THIN_BORDER
-            ws.freeze_panes = ws['A2']
-            current_row += 1
-
-        # 月份标题行
-        ws.merge_cells(start_row=current_row, start_column=1,
-                       end_row=current_row, end_column=len(COST_HEADER))
-        mc = ws.cell(row=current_row, column=1, value=f"{month}月")
-        mc.fill = MONTH_FILL
-        mc.alignment = Alignment(horizontal='center', vertical='center')
-        mc.font = Font(bold=True)
-        mc.border = THIN_BORDER
+                c.font = Font(bold=True)
         current_row += 1
 
-        # 合并产品成本
+        # 合并产品成本（修复 pandas FutureWarning：不用 inplace on slice）
         month_df = month_df.merge(
-            product_cost_df[["ASIN","总成本","人工"]], on="ASIN", how="left"
+            product_cost_df[["ASIN", "总成本", "人工"]], on="ASIN", how="left"
         )
-        month_df.rename(columns={"总成本":"产品成本","人工":"单款人工"}, inplace=True)
-        month_df["产品成本"].fillna(0, inplace=True)
-        month_df["单款人工"].fillna(0, inplace=True)
-        month_df["每票产品成本"] = (month_df["产品成本"] + month_df["单款人工"]) * month_df["申报量"].fillna(0)
+        month_df = month_df.rename(columns={"总成本": "产品成本", "人工": "单款人工"})
+        month_df["产品成本"] = month_df["产品成本"].fillna(0)
+        month_df["单款人工"] = month_df["单款人工"].fillna(0)
+        month_df["每票产品成本"] = (
+            (month_df["产品成本"] + month_df["单款人工"]) * month_df["申报量"].fillna(0)
+        )
 
         start_row = current_row
 
@@ -375,29 +374,27 @@ def run_cost(task: dict, dirs: dict) -> Path:
             ws.cell(row=current_row, column=1, value="（无数据）")
             current_row += 1
             total_row = current_row
-            ws.cell(total_row, COST_HEADER.index("单款人工")+1, "国内发货总计").fill = TOTAL_FILL
-            ws.cell(total_row, COST_HEADER.index("数量")+1, 0).fill = TOTAL_FILL
-            ws.cell(total_row, COST_HEADER.index("每票产品成本")+1, 0).fill = TOTAL_FILL
+            ws.cell(total_row, COST_HEADER.index("单款人工") + 1, "国内发货总计").fill = TOTAL_FILL
+            ws.cell(total_row, COST_HEADER.index("数量") + 1, 0).fill = TOTAL_FILL
+            ws.cell(total_row, COST_HEADER.index("每票产品成本") + 1, 0).fill = TOTAL_FILL
             current_row += 1
             continue
 
         for _, row in month_df.iterrows():
             for ci, cn in enumerate(COST_HEADER, 1):
-                if cn == "日期":       val = row.get("创建时间")
-                elif cn == "数量":     val = row.get("申报量")
-                elif cn == "FBA编号":  val = row.get("货件编号")
-                else:                  val = row.get(cn)
-                c = ws.cell(row=current_row, column=ci, value=val)
-                c.alignment = Alignment(horizontal='center', vertical='center')
-                c.border = THIN_BORDER
+                if cn == "日期":      val = row.get("创建时间")
+                elif cn == "数量":    val = row.get("申报量")
+                elif cn == "FBA编号": val = row.get("货件编号")
+                else:                 val = row.get(cn)
+                cell = ws.cell(row=current_row, column=ci, value=val)
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = THIN_BORDER
             ws.row_dimensions[current_row].height = 18
             current_row += 1
 
-        # 合并重复 FBA编号/货件名称列
-        from openpyxl.cell.cell import MergedCell as _MergedCell
+        # 合并重复 FBA编号/货件名称列（先缓存值再合并，防止读 MergedCell）
         for cn in ["FBA编号", "货件名称"]:
             ci = COST_HEADER.index(cn) + 1
-            # 先缓存原始值（合并后该列会出现 MergedCell，无法读 value）
             raw_vals = {}
             for r in range(start_row, current_row):
                 cell = ws.cell(r, ci)

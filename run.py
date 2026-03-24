@@ -57,7 +57,7 @@ def main():
         # 延迟打开浏览器，给服务器时间启动
         def open_browser():
             time.sleep(2)
-            webbrowser.open('http://127.0.0.1:5000')
+            webbrowser.open('http://0.0.0.0:5000')
         
         import threading
         browser_thread = threading.Thread(target=open_browser, daemon=True)
@@ -67,7 +67,7 @@ def main():
         from app import app
         
         app.run(
-            host='127.0.0.1',
+            host='0.0.0.0',
             port=5000,
             debug=False,
             use_reloader=False

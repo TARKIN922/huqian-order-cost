@@ -435,16 +435,18 @@
         <div class="action-title">STEP 04 — GENERATE</div>
 
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            <button class="run-btn" id="mergeBtn" onclick="startMerge()" style="flex:1;min-width:200px;background:linear-gradient(135deg,#00c8ff,#0090cc);">
+            <button class="run-btn" id="mergeBtn" onclick="startMerge()"
+                style="flex:1;min-width:200px;background:linear-gradient(135deg,#00c8ff,#0090cc);">
                 📊 生成多渠道表
             </button>
-            <button class="run-btn" id="runBtn" onclick="startProcess()" style="flex:1;min-width:200px;">
+            <button class="run-btn" id="runBtn" onclick="startProcess()"
+                style="flex:1;min-width:200px;">
                 🚀 一键生成全部报表
             </button>
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;">
             生成多渠道表：仅需 STEP 01 + 02 &nbsp;|&nbsp; 一键生成全部：需上传 STEP 01 + 02 + 03
-        </div>
+        </p>
 
         <!-- Progress -->
         <div class="progress-wrap" id="progressWrap">
@@ -693,7 +695,7 @@ function startMerge() {
 }
 
 function resetBtn(success = false) {
-    const runBtn = document.getElementById('runBtn');
+    const runBtn   = document.getElementById('runBtn');
     const mergeBtn = document.getElementById('mergeBtn');
     runBtn.disabled = false;
     runBtn.classList.remove('running');

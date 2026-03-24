@@ -1,6 +1,6 @@
 """
-订单处理平台 - Flask Web应用
-整合 merge.py / cost.py / cost01.py 三个处理脚本
+订单处理平台 - Flask Web应用 (优化版)
+每个任务独立目录，下载后自动清理，避免多用户冲突
 """
 
 import os
@@ -15,7 +15,7 @@ import pandas as pd
 
 from pathlib import Path
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, after_this_request
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
 from openpyxl.utils import get_column_letter
@@ -23,10 +23,14 @@ from openpyxl.utils import get_column_letter
 app = Flask(__name__)
 
 # =====================================================================
-# 目录配置（与原脚本保持一致）
+# 全局基础目录（仅 workspace 用于存放任务数据）
 # =====================================================================
 BASE_DIR = Path(__file__).parent
+WORKSPACE_BASE = BASE_DIR / "workspace"
+WORKSPACE_BASE.mkdir(parents=True, exist_ok=True)
 
+# 原全局目录保留（可选，但不再用于运行中读写，仅作参考）
+# 此处仅作兼容，实际处理时使用任务内子目录
 ORDERS_DIR     = BASE_DIR / "后台订单原表"
 SHIPMENTS_DIR  = BASE_DIR / "后台货件表"
 COST_DIR       = BASE_DIR / "成本"
@@ -34,32 +38,31 @@ CHANNEL_DIR    = BASE_DIR / "多渠道订单表"
 FEE_DIR        = BASE_DIR / "费用表"
 RESULT_DIR     = BASE_DIR / "results"
 
-for d in [ORDERS_DIR, SHIPMENTS_DIR, COST_DIR, CHANNEL_DIR, FEE_DIR, RESULT_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-
+# 允许的文件类型
 ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls'}
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-# 任务存储（内存 + 文件双写，重启后可恢复）
+# 任务存储（内存 + 磁盘）
 tasks: dict = {}
-
-TASKS_DIR = BASE_DIR / "workspace"
+TASKS_DIR = WORKSPACE_BASE / "task_status"   # 状态文件单独存放
 TASKS_DIR.mkdir(exist_ok=True)
 
 def _write_task_status(task: dict):
-    """将task状态写入磁盘，防止重启丢失"""
+    """将task状态写入磁盘，含 task_dir 信息"""
     try:
         p = TASKS_DIR / f"{task['id']}.json"
         import json as _json
-        p.write_text(_json.dumps({
+        data = {
             'id': task['id'],
             'type': task['type'],
             'status': task['status'],
             'progress': task['progress'],
             'message': task['message'],
-            'result_files': task.get('result_files', {})
-        }, ensure_ascii=False), encoding='utf-8')
+            'result_files': task.get('result_files', {}),
+            'task_dir': str(task['task_dir']) if 'task_dir' in task else None
+        }
+        p.write_text(_json.dumps(data, ensure_ascii=False), encoding='utf-8')
     except Exception:
         pass
 
@@ -69,13 +72,31 @@ def _load_task_from_disk(task_id: str) -> dict | None:
         p = TASKS_DIR / f"{task_id}.json"
         if p.exists():
             import json as _json
-            return _json.loads(p.read_text(encoding='utf-8'))
+            data = _json.loads(p.read_text(encoding='utf-8'))
+            # 转换 task_dir 为 Path
+            if data.get('task_dir'):
+                data['task_dir'] = Path(data['task_dir'])
+            return data
     except Exception:
         pass
     return None
 
+def _cleanup_task(task_id: str):
+    """删除任务目录、状态文件，并从内存中移除"""
+    # 从内存移除
+    task = tasks.pop(task_id, None)
+    if not task:
+        task = _load_task_from_disk(task_id)
+    if task and 'task_dir' in task:
+        task_dir = Path(task['task_dir'])
+        if task_dir.exists():
+            shutil.rmtree(task_dir, ignore_errors=True)
+    # 删除状态文件
+    status_file = TASKS_DIR / f"{task_id}.json"
+    status_file.unlink(missing_ok=True)
+
 # =====================================================================
-# 工具函数
+# 工具函数（与原保持一致）
 # =====================================================================
 
 def safe_filename(filename: str) -> str:
@@ -95,7 +116,7 @@ def _log(task: dict, msg: str, pct: int = None):
     _write_task_status(task)
 
 # =====================================================================
-# ① merge.py 逻辑
+# ① merge.py 逻辑（改造为接受 task_dir）
 # =====================================================================
 
 MONTH_MAP = {
@@ -200,11 +221,16 @@ def _color_total_row(writer, sheet_name):
     for col in range(1, ws.max_column + 1):
         ws.cell(row=ws.max_row, column=col).fill = fill
 
-def run_merge(task: dict) -> Path:
-    """执行 merge.py 逻辑，返回生成的 xlsx 路径"""
+def run_merge(task: dict, task_dir: Path) -> Path:
+    """执行 merge.py 逻辑，基于 task_dir 下的子目录"""
+    orders_dir = task_dir / "orders"
+    shipments_dir = task_dir / "shipments"
+    channel_dir = task_dir / "channel"
+    channel_dir.mkdir(exist_ok=True)
+
     _log(task, "📂 扫描订单文件...", 5)
 
-    order_files = [(f, _order_month(f)) for f in os.listdir(ORDERS_DIR)
+    order_files = [(f, _order_month(f)) for f in os.listdir(orders_dir)
                    if f.lower().endswith('.csv')]
     order_files = [(f, m) for f, m in order_files if m is not None]
     order_files.sort(key=lambda x: x[1])
@@ -214,7 +240,7 @@ def run_merge(task: dict) -> Path:
 
     months = [m for _, m in order_files]
     month_label = f"{min(months)}-{max(months)}" if len(set(months)) > 1 else str(min(months))
-    output_file = CHANNEL_DIR / f"{month_label}月多渠道.xlsx"
+    output_file = channel_dir / f"{month_label}月多渠道.xlsx"
 
     sheet_written = False
     total = len(order_files)
@@ -222,14 +248,14 @@ def run_merge(task: dict) -> Path:
     with pd.ExcelWriter(str(output_file), engine='openpyxl') as writer:
         for idx, (file_name, month) in enumerate(order_files):
             _log(task, f"处理订单 {file_name}...", 5 + int(idx / total * 45))
-            order_df = _read_csv(str(ORDERS_DIR / file_name))
+            order_df = _read_csv(str(orders_dir / file_name))
             if order_df.empty:
                 continue
 
-            ship_files = [f for f in os.listdir(SHIPMENTS_DIR) if _shipment_month(f) == month]
+            ship_files = [f for f in os.listdir(shipments_dir) if _shipment_month(f) == month]
             shipment_dict = {}
             if ship_files:
-                sdf = _read_csv(str(SHIPMENTS_DIR / ship_files[0]))
+                sdf = _read_csv(str(shipments_dir / ship_files[0]))
                 if not sdf.empty:
                     shipment_dict = dict(zip(sdf.iloc[:,0].astype(str), sdf.iloc[:,1].astype(str)))
 
@@ -265,7 +291,7 @@ def run_merge(task: dict) -> Path:
     return output_file
 
 # =====================================================================
-# ② cost.py 逻辑
+# ② cost.py 逻辑（改造为接受 task_dir）
 # =====================================================================
 
 FEE_SHEET_NAME = "发货成本"
@@ -280,8 +306,12 @@ THIN_BORDER = Border(
     top=Side(style='thin'), bottom=Side(style='thin')
 )
 
-def _get_fee_path_and_months() -> tuple[Path, list]:
-    files = list(CHANNEL_DIR.glob("*多渠道.xlsx"))
+def _get_fee_path_and_months(task_dir: Path) -> tuple[Path, list]:
+    channel_dir = task_dir / "channel"
+    fee_dir = task_dir / "fee"
+    fee_dir.mkdir(exist_ok=True)
+
+    files = list(channel_dir.glob("*多渠道.xlsx"))
     if not files:
         raise FileNotFoundError("多渠道订单表未找到，请先执行合并步骤")
     filename = files[0].name
@@ -291,19 +321,21 @@ def _get_fee_path_and_months() -> tuple[Path, list]:
         months = list(range(int(s), int(e) + 1))
     else:
         months = [int(month_part)]
-    fee_path = FEE_DIR / f"{month_part}月费用表.xlsx"
+    fee_path = fee_dir / f"{month_part}月费用表.xlsx"
     return fee_path, months
 
-def _load_product_cost() -> pd.DataFrame:
-    for f in COST_DIR.glob("*.xlsx"):
+def _load_product_cost(task_dir: Path) -> pd.DataFrame:
+    cost_dir = task_dir / "cost"
+    for f in cost_dir.glob("*.xlsx"):
         if "fba" not in f.name.lower():
             df = pd.read_excel(str(f))
             df.rename(columns=lambda x: x.strip(), inplace=True)
             return df
     raise FileNotFoundError("未找到产品成本表（成本文件夹内非 fba 开头的 xlsx）")
 
-def _load_fba_files() -> pd.DataFrame:
-    files = list(COST_DIR.glob("fba*.xlsx")) + list(COST_DIR.glob("FBA*.xlsx"))
+def _load_fba_files(task_dir: Path) -> pd.DataFrame:
+    cost_dir = task_dir / "cost"
+    files = list({f for f in list(cost_dir.glob("fba*.xlsx")) + list(cost_dir.glob("FBA*.xlsx"))})
     if not files:
         raise FileNotFoundError("未找到 FBA 发货表（成本文件夹内 fba*.xlsx）")
     dfs = []
@@ -317,23 +349,17 @@ def _load_fba_files() -> pd.DataFrame:
     combined["月份"] = combined["创建时间"].dt.month
     return combined
 
-def run_cost(task: dict) -> Path:
-    """执行 cost.py 逻辑"""
+def run_cost(task: dict, task_dir: Path) -> Path:
+    """执行 cost.py 逻辑，基于 task_dir"""
     _log(task, "📋 生成发货成本表...", 52)
-    fee_path, month_list = _get_fee_path_and_months()
-    product_cost_df = _load_product_cost()
-    fba_df = _load_fba_files()
+    fee_path, month_list = _get_fee_path_and_months(task_dir)
+    product_cost_df = _load_product_cost(task_dir)
+    fba_df = _load_fba_files(task_dir)
 
-    if fee_path.exists():
-        wb = load_workbook(str(fee_path))
-        if FEE_SHEET_NAME not in wb.sheetnames:
-            ws = wb.create_sheet(FEE_SHEET_NAME)
-        else:
-            ws = wb[FEE_SHEET_NAME]
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = FEE_SHEET_NAME
+    # 始终新建工作簿，避免重复追加内容
+    wb = Workbook()
+    ws = wb.active
+    ws.title = FEE_SHEET_NAME
 
     current_row = 1
 
@@ -352,7 +378,7 @@ def run_cost(task: dict) -> Path:
             ws.freeze_panes = ws['A2']
             current_row += 1
 
-        # 月份标题行（逐列填充，不合并，避免重复生成时 MergedCell 只读错误）
+        # 月份标题行
         for _ci in range(1, len(COST_HEADER) + 1):
             _mc = ws.cell(row=current_row, column=_ci, value=(f"{month}月" if _ci == 1 else None))
             _mc.fill = MONTH_FILL
@@ -362,11 +388,13 @@ def run_cost(task: dict) -> Path:
                 _mc.font = Font(bold=True)
         current_row += 1
 
-        # 合并产品成本
-        month_df = month_df.merge(
-            product_cost_df[["ASIN","总成本","人工"]], on="ASIN", how="left"
-        )
-        month_df.rename(columns={"总成本":"产品成本","人工":"单款人工"}, inplace=True)
+        # 合并产品成本：用 FBA表的 MSKU 匹配产品成本表的 SKU 列
+        # 产品成本表的 SKU 列先重命名为 _cost_sku 再 merge，避免与 FBA表自身的 SKU 列冲突
+        _cost_sub = product_cost_df[["SKU", "总成本", "人工"]].drop_duplicates(subset="SKU", keep="first").copy()
+        _cost_sub = _cost_sub.rename(columns={"SKU": "_cost_sku"})
+        month_df = month_df.merge(_cost_sub, left_on="MSKU", right_on="_cost_sku", how="left")
+        month_df.drop(columns=["_cost_sku"], inplace=True)
+        month_df.rename(columns={"总成本": "产品成本", "人工": "单款人工"}, inplace=True)
         month_df["产品成本"] = month_df["产品成本"].fillna(0)
         month_df["单款人工"] = month_df["单款人工"].fillna(0)
         month_df["每票产品成本"] = (month_df["产品成本"] + month_df["单款人工"]) * month_df["申报量"].fillna(0)
@@ -395,10 +423,9 @@ def run_cost(task: dict) -> Path:
             ws.row_dimensions[current_row].height = 18
             current_row += 1
 
-        # 合并重复 FBA编号/货件名称列（先缓存值，再合并，避免 MergedCell 只读错误）
+        # 合并重复 FBA编号/货件名称列
         for cn in ["FBA编号","货件名称"]:
             ci = COST_HEADER.index(cn) + 1
-            # 先把所有单元格的值缓存下来（合并后读取会返回 MergedCell 对象）
             col_vals = {r: ws.cell(r, ci).value for r in range(start_row, current_row)}
             sm = start_row
             for r in range(start_row + 1, current_row):
@@ -440,7 +467,7 @@ def run_cost(task: dict) -> Path:
     return fee_path
 
 # =====================================================================
-# ③ cost01.py 逻辑
+# ③ cost01.py 逻辑（改造为接受 task_dir）
 # =====================================================================
 
 def _safe_float(v):
@@ -460,22 +487,26 @@ def _find_col(headers, keywords):
                 return i
     return None
 
-def run_cost01(task: dict) -> Path:
-    """执行 cost01.py 逻辑，追加"多渠道订单" Sheet 到费用表"""
+def run_cost01(task: dict, task_dir: Path) -> Path:
+    """执行 cost01.py 逻辑，基于 task_dir"""
     _log(task, "📊 生成多渠道订单费用明细...", 78)
 
+    fee_dir = task_dir / "fee"
+    channel_dir = task_dir / "channel"
+    cost_dir = task_dir / "cost"
+
     # 找文件
-    fee_files = list(FEE_DIR.glob("*费用表.xlsx"))
+    fee_files = list(fee_dir.glob("*费用表.xlsx"))
     if not fee_files:
         raise FileNotFoundError("未找到费用表.xlsx，请先执行发货成本步骤")
     fee_file = fee_files[0]
 
-    order_files = list(CHANNEL_DIR.glob("*.xlsx"))
+    order_files = list(channel_dir.glob("*.xlsx"))
     if not order_files:
         raise FileNotFoundError("未找到多渠道订单表")
     order_file = order_files[0]
 
-    product_files = [f for f in COST_DIR.glob("*.xlsx") if "产品成本" in f.name]
+    product_files = [f for f in cost_dir.glob("*.xlsx") if "产品成本" in f.name]
     if not product_files:
         raise FileNotFoundError('未找到 产品成本.xlsx（文件名需含"产品成本"）')
     product_file = product_files[0]
@@ -625,30 +656,56 @@ def run_cost01(task: dict) -> Path:
     return fee_file
 
 # =====================================================================
-# Flask 路由
+# Flask 路由（适配任务独立目录）
 # =====================================================================
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-
 @app.route('/api/session', methods=['POST'])
 def create_session():
-    """前端首次上传时调用，返回一个新的 task_id 供后续使用"""
+    """创建新任务，初始化独立目录"""
     task_id = str(uuid.uuid4())
-    return jsonify({'success': True, 'task_id': task_id})
+    task_dir = WORKSPACE_BASE / task_id
+    # 创建子目录
+    for sub in ['orders', 'shipments', 'cost', 'channel', 'fee']:
+        (task_dir / sub).mkdir(parents=True, exist_ok=True)
 
+    task = {
+        'id': task_id,
+        'type': None,
+        'status': 'created',
+        'progress': 0,
+        'message': '任务已创建',
+        'created_at': datetime.now().isoformat(),
+        'result_files': {},
+        'task_dir': task_dir
+    }
+    tasks[task_id] = task
+    _write_task_status(task)
+    return jsonify({'success': True, 'task_id': task_id})
 
 @app.route('/api/upload', methods=['POST'])
 def upload_files():
     """
-    上传文件
-    type 参数:
-      - orders     → 后台订单原表/
-      - shipments  → 后台货件表/
-      - cost       → 成本/
+    上传文件到指定任务
+    参数:
+      - task_id: 任务ID
+      - type: orders / shipments / cost
+      - files: 文件列表
     """
+    task_id = request.form.get('task_id')
+    if not task_id:
+        return jsonify({'success': False, 'error': '缺少 task_id'}), 400
+
+    # 获取任务
+    task = tasks.get(task_id) or _load_task_from_disk(task_id)
+    if not task:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    if task['status'] not in ['created', 'failed']:   # 允许失败后重传
+        return jsonify({'success': False, 'error': '任务已处理，不可再上传'}), 400
+
     file_type = request.form.get('type')
     if file_type not in ['orders', 'shipments', 'cost']:
         return jsonify({'success': False, 'error': '无效的文件类型'}), 400
@@ -657,8 +714,8 @@ def upload_files():
     if not files:
         return jsonify({'success': False, 'error': '未提供文件'}), 400
 
-    dir_map = {'orders': ORDERS_DIR, 'shipments': SHIPMENTS_DIR, 'cost': COST_DIR}
-    dest_dir = dir_map[file_type]
+    task_dir = Path(task['task_dir'])
+    dest_dir = task_dir / file_type
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     saved = []
@@ -673,7 +730,6 @@ def upload_files():
 
     return jsonify({'success': True, 'files': saved, 'count': len(saved), 'type': file_type})
 
-
 @app.route('/api/process', methods=['POST'])
 def process_data():
     """
@@ -685,48 +741,58 @@ def process_data():
     if process_type not in ['merge', 'cost', 'all']:
         return jsonify({'success': False, 'error': '无效的处理类型'}), 400
 
-    # 校验文件
-    if not list(ORDERS_DIR.glob('*.csv')):
+    task_id = data.get('task_id')
+    if not task_id:
+        return jsonify({'success': False, 'error': '缺少 task_id'}), 400
+
+    task = tasks.get(task_id) or _load_task_from_disk(task_id)
+    if not task:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    if task['status'] not in ['created', 'failed']:
+        return jsonify({'success': False, 'error': '任务已处理或正在处理'}), 400
+
+    # 校验文件存在
+    task_dir = Path(task['task_dir'])
+    if not (task_dir / 'orders').glob('*.csv'):
         return jsonify({'success': False, 'error': '请先上传后台订单原表（CSV 格式）'}), 400
-    if not list(SHIPMENTS_DIR.iterdir()):
+    if not (task_dir / 'shipments').iterdir():
         return jsonify({'success': False, 'error': '请先上传后台货件表'}), 400
     if process_type in ['cost', 'all']:
-        cost_files = list(COST_DIR.glob('*.xlsx')) + list(COST_DIR.glob('*.xls'))
+        cost_files = list((task_dir / 'cost').glob('*.xlsx')) + list((task_dir / 'cost').glob('*.xls'))
         if not cost_files:
             return jsonify({'success': False, 'error': '请先上传成本文件（xlsx 格式）'}), 400
 
-    # 复用前端传来的 task_id（来自 /api/session），没有则新建
-    task_id = data.get('task_id') or str(uuid.uuid4())
-    task = {
-        'id': task_id,
-        'type': process_type,
-        'status': 'processing',
-        'progress': 0,
-        'message': '准备中...',
-        'created_at': datetime.now().isoformat(),
-        'result_files': {}
-    }
-    tasks[task_id] = task
+    task['type'] = process_type
+    task['status'] = 'processing'
+    task['progress'] = 0
+    task['message'] = '准备中...'
+    _write_task_status(task)
 
     thread = threading.Thread(target=_run_task, args=(task_id, process_type), daemon=True)
     thread.start()
 
     return jsonify({'success': True, 'task_id': task_id})
 
-
 def _run_task(task_id: str, process_type: str):
-    task = tasks[task_id]
+    task = tasks.get(task_id)
+    if not task:
+        task = _load_task_from_disk(task_id)
+        if task:
+            tasks[task_id] = task
+        else:
+            return
+    task_dir = Path(task['task_dir'])
     try:
         merge_out = None
         fee_out   = None
 
         if process_type in ['merge', 'all']:
-            merge_out = run_merge(task)
+            merge_out = run_merge(task, task_dir)
             task['result_files']['merge'] = str(merge_out)
 
         if process_type in ['cost', 'all']:
-            fee_out = run_cost(task)
-            run_cost01(task)
+            fee_out = run_cost(task, task_dir)
+            run_cost01(task, task_dir)
             task['result_files']['cost'] = str(fee_out)
 
         task['status']   = 'completed'
@@ -742,11 +808,9 @@ def _run_task(task_id: str, process_type: str):
         _write_task_status(task)
         print(traceback.format_exc())
 
-
 @app.route('/api/task/<task_id>')
 def get_task_status(task_id):
     if task_id not in tasks:
-        # 尝试从磁盘恢复（重启/多worker场景）
         t = _load_task_from_disk(task_id)
         if t is None:
             return jsonify({'success': False, 'error': '任务不存在'}), 404
@@ -762,19 +826,27 @@ def get_task_status(task_id):
         }
     })
 
+@app.route('/api/task/<task_id>/files')
+def list_task_files(task_id):
+    """返回指定任务已上传的文件列表"""
+    task = tasks.get(task_id) or _load_task_from_disk(task_id)
+    if not task:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    task_dir = Path(task['task_dir'])
+    result = {}
+    for sub in ['orders', 'shipments', 'cost']:
+        d = task_dir / sub
+        result[sub] = [f.name for f in d.iterdir()] if d.exists() else []
+    return jsonify({'success': True, 'files': result})
 
 @app.route('/api/download/<task_id>')
 def download_zip(task_id):
-    """将本次任务所有结果文件打包成 ZIP 下载"""
-    import zipfile, io, tempfile
+    """将本次任务所有结果文件打包成 ZIP 下载，下载后自动清理任务"""
+    import zipfile, io
 
-    # 先查内存，再查磁盘
-    if task_id not in tasks:
-        t = _load_task_from_disk(task_id)
-        if t is None:
-            return jsonify({'success': False, 'error': '任务不存在'}), 404
-        tasks[task_id] = t
-    task = tasks[task_id]
+    task = tasks.get(task_id) or _load_task_from_disk(task_id)
+    if not task:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
 
     if task['status'] != 'completed':
         return jsonify({'success': False, 'error': '任务未完成'}), 400
@@ -796,16 +868,22 @@ def download_zip(task_id):
             zf.write(p, p.name)
     buf.seek(0)
 
+    @after_this_request
+    def cleanup(response):
+        # 发送后删除任务目录和状态
+        _cleanup_task(task_id)
+        return response
+
     return send_file(buf, as_attachment=True,
                      download_name='报表结果.zip',
                      mimetype='application/zip')
 
-
 @app.route('/api/download/<task_id>/<file_type>')
 def download_file(task_id, file_type):
-    if task_id not in tasks:
+    """下载单个结果文件（不自动清理，建议使用zip下载）"""
+    task = tasks.get(task_id) or _load_task_from_disk(task_id)
+    if not task:
         return jsonify({'success': False, 'error': '任务不存在'}), 404
-    task = tasks[task_id]
     if task['status'] != 'completed':
         return jsonify({'success': False, 'error': '任务未完成'}), 400
 
@@ -819,23 +897,24 @@ def download_file(task_id, file_type):
                      download_name=name_map.get(file_type, 'result.xlsx'),
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-
 @app.route('/api/cleanup', methods=['POST'])
 def cleanup():
-    """清空上传文件（保留结果）"""
+    """清空所有任务数据（谨慎使用）"""
     try:
-        for d in [ORDERS_DIR, SHIPMENTS_DIR, COST_DIR, CHANNEL_DIR, FEE_DIR]:
-            if d.exists():
-                shutil.rmtree(d)
-                d.mkdir(parents=True, exist_ok=True)
-        return jsonify({'success': True, 'message': '已清空所有上传文件'})
+        # 删除所有任务目录和状态文件
+        for item in WORKSPACE_BASE.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+        for f in TASKS_DIR.glob("*.json"):
+            f.unlink()
+        tasks.clear()
+        return jsonify({'success': True, 'message': '已清空所有任务数据'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-
 @app.route('/api/files')
 def list_files():
-    """列出各目录文件状态，方便前端展示"""
+    """列出原始全局目录文件（兼容性保留）"""
     def ls(d: Path):
         return [f.name for f in d.iterdir()] if d.exists() else []
     return jsonify({
@@ -845,22 +924,18 @@ def list_files():
         'results':   ls(CHANNEL_DIR) + ls(FEE_DIR)
     })
 
-
 @app.errorhandler(404)
 def not_found(_): return jsonify({'success': False, 'error': '页面不存在'}), 404
 
 @app.errorhandler(500)
 def server_error(_): return jsonify({'success': False, 'error': '服务器内部错误'}), 500
 
-
 if __name__ == '__main__':
     print("=" * 60)
-    print("订单处理平台启动")
-    print(f"  后台订单原表: {ORDERS_DIR}")
-    print(f"  后台货件表:   {SHIPMENTS_DIR}")
-    print(f"  成本文件夹:   {COST_DIR}")
-    print(f"  多渠道输出:   {CHANNEL_DIR}")
-    print(f"  费用表输出:   {FEE_DIR}")
-    print("服务地址: http://127.0.0.1:5000")
+    print("订单处理平台启动 (优化版)")
+    print("  工作目录: {}".format(WORKSPACE_BASE))
+    print("  任务状态: {}".format(TASKS_DIR))
+    # 这里打印的地址会变化，稍后我们会用实际IP替换
+    print("服务地址: http://<你的内网IP>:5000")
     print("=" * 60)
-    app.run(host='127.0.0.1', port=5000, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
